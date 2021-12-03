@@ -1,0 +1,203 @@
+/*  XXXXXXXXXXXXXXXXXX  ESP32_LP_GAS_SENSOR_MQTT  Project - 11/27/2021 XXXXXXXXXXXXXXXXXXXXX
+    This sketch will use an Adafruit HUZZAH32 board and connect it to your SSID and MQTT server.
+    It blinks the BUILTIN LED until WIFI connects and then remains on until the entire sketch is complete, then it turns off.
+    It will turn on SENSORPOWER pin GPIO21 high to power the LP gas sensor which draws 3ma.
+    It reads analog voltage values from a LPGAS sensor on pin GPIO39 (LPLEVELPIN).
+    It maps the raw data to a range of 0 to 100 and prints it to the serial monitor.
+    It publishes the LPGAS data to a topic of "sensor/lpgassensor/lplevel.
+    It monitors the solar panel voltage on pin GPIO36 (SOLARPIN) thru a 2-resistor voltage divider.
+    It monitors the supply voltage thru a 2-resistor voltage divider built in to analog input 13. It must be multipied by a factor of 2. 
+    See the OHMS law calculator at https://ohmslawcalculator.com/voltage-divider-calculator. The pre-calculated values are shown in the next few lines.
+    6.6V  = 200k R2 = 200k  equation is float voltage=(float)analogRead(36)/4095*6*(200000/200000)
+    It prints the raw voltages and the calibrated voltage data to the serial monitor.
+    It publishes the solar output level to an MQTT topic of "sensor/lpgassensor/solarlevel"
+    It publishes the battery voltage level to an MQTT topic of "sensor/lpgassensor/batterylevel"
+    It keeps up with the number of times it has woken up with the variable "bootcount" that is stored in RTC memory.
+    It publishes this bootcount to a topic of "sensor/lpgassensor/bootcount"
+    It will send an MQTT message of "Battery level is low!" if the level goes below a specified level (3.3v).
+    It goes into deep sleep mode for a period of time after all commands have been executed.
+    It will then wake up and repeat this process on a time interval set by the Deepsleeptime. In this case it is 30 minutes.
+    The total time it takes to wake up and transmit the data is roughly 3 to 5 seconds. 
+    It draws roughly 6ma when in deep sleep. It draws an average of 130MA for the time it is awake.
+  */
+
+
+#include <Arduino.h>
+RTC_DATA_ATTR int bootcount = 0;
+
+#include <WiFi.h>
+#include <PubSubClient.h>
+#define Deepsleeptime 30 // Define a variable for the deep sleep time and give it a value in minutes
+//IPAddress local_IP(192,168,1,123);
+//IPAddress gateway(192,168,1,254);
+//IPAddress subnet(255,255,255,0);
+//IPAddress primaryDNS(8,8,8,8);
+
+void goToDeepSleep()   // setup the deep sleep function to be called later at the end of the code.
+{
+  Serial.print("BYE_BYE - Going to sleep now for ");
+  Serial.print(Deepsleeptime);
+  Serial.print(" minutes!");
+  esp_sleep_enable_timer_wakeup(Deepsleeptime * 60000000);
+  esp_deep_sleep_start();
+}
+
+// Update these with values suitable for your network.
+const char* ssid = "DAVID AT HOME";
+const char* password = "davidsnetwork";
+const char* mqtt_server = "192.168.1.110";
+float rawbatterylevel = 0.0;
+float batterylevel = 0.00;
+int lplevel = 0;
+int rawlplevel = 0;
+float rawsolarlevel = 0.0;
+float solarvoltage = 0.0;
+
+#define LPLEVELPIN  39    // select the input pin for the LP sensor. analog A3 input 
+#define VOLTAGE_PIN 35    // select the input pin for the battery monitor (VP). Anaolg input A13 inout, reads 1/2 of battery voltage.
+#define SENSORPOWER 21    // select the output pin to power the sensor which draws 3 ma. 
+#define SOLARPIN    36     //select the input pin for the solar panel voltage monitor. Analog input A4.
+#define LED_BUILTIN 13  // connected to the red LED
+
+WiFiClient LPGAS_SENSOR;
+PubSubClient client(LPGAS_SENSOR);
+  
+void setup_wifi()       // We start by connecting to a WiFi network
+{
+    
+  Serial.begin(115200);
+  Serial.println("");
+  Serial.print("Connecting to WiFi SSID ");
+  WiFi.mode(WIFI_STA);
+  Serial.println(ssid);
+ // if(!WiFi.config(local_IP, gateway, subnet, primaryDNS))
+ // {
+ //   Serial.println("STA failed to configure");
+ // }
+  WiFi.begin(ssid, password);
+  //pinMode(LED_BUILTIN, OUTPUT);
+  while (WiFi.status() != WL_CONNECTED)  {
+    Serial.print(".");
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(50);
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(50);
+  }
+  //pinMode(LED_BUILTIN, INPUT);
+  pinMode(SOLARPIN, INPUT);
+  Serial.println("Ready");
+  Serial.println("");
+  Serial.println("WiFi connected!");
+  Serial.print("    IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnect()     // Loop until we're reconnected
+{
+  while (!client.connected()) {
+    Serial.println("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect("LP_Gas_Sensor")) {
+      Serial.println("    Connected as device client LP_Gas_Sensor.");
+      Serial.println("");
+      digitalWrite(LED_BUILTIN, HIGH);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 2 seconds");
+      // Wait 2 seconds before retrying
+      delay(2000);
+    }
+  }
+}
+void setup() { 
+    
+  Serial.begin(115200);
+  client.setServer(mqtt_server, 1883);
+  ++bootcount;
+  Serial.println("");
+  Serial.println("");
+  Serial.println("................LP GAS SENSOR........11/27/2021........");
+  Serial.println("");
+  Serial.println("The bootcount is " + String(bootcount));
+}
+
+void loop()    {
+  
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(SENSORPOWER, OUTPUT);
+  Serial.println("");
+  Serial.println("Reading sensor data");
+  
+// These next lines will read the LP Gas level voltage 
+  digitalWrite(SENSORPOWER, HIGH); //This powers up the LP sensor on GPIO 21
+  delay(5);
+  rawlplevel = analogRead(LPLEVELPIN); // GPIO 39 A3 
+  digitalWrite(SENSORPOWER, LOW); //This turns off the power to the LP sensor on GPIO 21
+  pinMode(SENSORPOWER, INPUT);
+  Serial.print("The raw LP level is ");
+  Serial.println(rawlplevel);
+  lplevel = map(rawlplevel, 0, 4095, 0, 100)+ 2;  //  
+  Serial.print("The LP Gas level is ");
+  Serial.print(lplevel);
+  Serial.println("%");
+  
+// These next line will read the battery voltage and print it to serial monitor
+
+  rawbatterylevel = analogRead(VOLTAGE_PIN); // GPIO35  Analog inout A13 which is an internal pin with voltage divider.
+  Serial.print("The raw battery level is ");
+  Serial.println(rawbatterylevel);
+  batterylevel =  (rawbatterylevel/4095) * 3.3 * 2; //adjust the calibration number to match VOM readings of battery.
+  Serial.print("The battery supply voltage is ");
+  Serial.print(batterylevel);
+  Serial.println(" Volts");
+    
+  // These next line will read the solar panel output voltage and print it to serial monitor
+  delay(5);
+  rawsolarlevel = analogRead(SOLARPIN); // GPIO36 or analog input A4
+  Serial.print("The raw solar level is ");
+  Serial.println(rawsolarlevel);
+  solarvoltage =  (rawsolarlevel/4095) * 6.6; //the resisitors were both 200k. Ajust the calibration number to match VOM readings of solar output.
+  Serial.print("The solar output voltage is ");
+  Serial.print(solarvoltage);
+  Serial.println(" Volts");
+  
+  setup_wifi();
+
+
+  if (!client.connected()) {
+    reconnect();
+  }
+  digitalWrite(LED_BUILTIN, HIGH); //This turns on the built in LED.
+  Serial.println("Sending MQTT messages.");
+  
+  if (solarvoltage <= 3)// sets the level for the low solar output message to be sent.
+  { 
+    Serial.println("SOLAR OUTPUT VOLTAGE IS LOW!");
+  //client.publish("sensor/lpgassensor/solarvoltage", String("LP GAS Sensor Solar output voltage is low!").c_str());  // Publish the low solar output voltage message value to MQTT
+  }
+  if (batterylevel <= 3.5)// sets the level for the low battery message to be sent.
+  { 
+    Serial.println("BATTERY VOLTAGE IS LOW!");
+  //client.publish("sensor/lpgassensor/batterylevel", String("LP GAS Sensor battery level is low!").c_str());  // Publish the low battery message value to MQTT
+  }
+  if (lplevel <= 30)
+  { 
+    Serial.println("LP GAS LEVEL IS LOW!");
+    client.publish("sensor/lpgassensor/lplevel", String("LP GAS level is low!").c_str());  // Publish the low las level message value to MQTT
+  }
+  delay(5);
+  client.publish("sensor/lpgassensor/lplevel", String(lplevel).c_str(),1);            // Publish the LP GAS Level to MQTT
+  delay(5);
+  client.publish("sensor/lpgassensor/bootcount", String(bootcount).c_str(),1);        // Publish the bootcount to MQTT
+  delay(5);
+  client.publish("sensor/lpgassensor/solarvoltage", String(solarvoltage).c_str(), 1);  // Publish the solar voltage value to MQTT
+  delay(5);
+  client.publish("sensor/lpgassensor/batterylevel", String(batterylevel).c_str(), 1);  // Publish the batterylevel value to MQTT
+  Serial.println("");
+  digitalWrite(LED_BUILTIN, LOW); //This turns off the built in LED.
+
+ goToDeepSleep(); //  comment out this line for testing
+ //delay(3000);   //  comment out this line for testing 
+  return;
+}
