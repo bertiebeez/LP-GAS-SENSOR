@@ -4,17 +4,19 @@
     It will turn on SENSORPOWER pin GPIO21 high to power the LP gas sensor which draws 3ma.
     It reads analog voltage values from a LPGAS sensor on pin GPIO39 (LPLEVELPIN).
     It maps the raw data to a range of 0 to 100 and prints it to the serial monitor.
-    It publishes the LPGAS data to a topic of "sensor/lpgassensor/lplevel.
-    It monitors the solar panel voltage on pin GPIO36 (SOLARPIN) thru a 2-resistor voltage divider.
-    It monitors the supply voltage thru a 2-resistor voltage divider built in to analog input 13. It must be multipied by a factor of 2. 
+    It publishes the LPGAS level to a topic of "sensor/lpgassensor/lplevel.
+    It monitors the solar panel voltage on pin GPIO36 (SOLARPIN) thru a 2-resistor voltage divider made of 200K and 120K resistors.
+    It monitors the supply voltage thru a 2-resistor voltage divider built in to analog input 13. It must be multiplied by a factor of 2. 
     See the OHMS law calculator at https://ohmslawcalculator.com/voltage-divider-calculator. The pre-calculated values are shown in the next few lines.
-    6.6V  = 200k R2 = 200k  equation is float voltage=(float)analogRead(36)/4095*6*(200000/200000)
+    8.8V  = 200k R2 = 120k  equation is float voltage=(float)analogRead(36)/4095*8.8) This had to be adjusted slightly to get an accurate reading.
     It prints the raw voltages and the calibrated voltage data to the serial monitor.
     It publishes the solar output level to an MQTT topic of "sensor/lpgassensor/solarlevel"
     It publishes the battery voltage level to an MQTT topic of "sensor/lpgassensor/batterylevel"
     It keeps up with the number of times it has woken up with the variable "bootcount" that is stored in RTC memory.
     It publishes this bootcount to a topic of "sensor/lpgassensor/bootcount"
-    It will send an MQTT message of "Battery level is low!" if the level goes below a specified level (3.3v).
+    It can send an MQTT message of "LP GAS Sensor Battery level is low!" if the level goes below a specified level (3.6v).
+    It can send an MQTT message of "LP GAS level is low!" if the level goes below a specified level (30%).
+    It can send an MQTT message of "LP GAS Sensor Solar voltage is low!" if the level goes below a specified level (3v).
     It goes into deep sleep mode for a period of time after all commands have been executed.
     It will then wake up and repeat this process on a time interval set by the Deepsleeptime. In this case it is 30 minutes.
     The total time it takes to wake up and transmit the data is roughly 3 to 5 seconds. 
@@ -28,7 +30,7 @@ RTC_DATA_ATTR int bootcount = 0;
 #include <WiFi.h>
 #include <PubSubClient.h>
 #define Deepsleeptime 30 // Define a variable for the deep sleep time and give it a value in minutes
-//IPAddress local_IP(192,168,1,123);
+//IPAddress local_IP(192,168,1,123); //use these 4 lines if you wish to have a static IP address
 //IPAddress gateway(192,168,1,254);
 //IPAddress subnet(255,255,255,0);
 //IPAddress primaryDNS(8,8,8,8);
@@ -43,8 +45,8 @@ void goToDeepSleep()   // setup the deep sleep function to be called later at th
 }
 
 // Update these with values suitable for your network.
-const char* ssid = "DAVID AT HOME";
-const char* password = "davidsnetwork";
+const char* ssid = "your network";
+const char* password = "your password";
 const char* mqtt_server = "192.168.1.110";
 float rawbatterylevel = 0.0;
 float batterylevel = 0.00;
@@ -54,7 +56,7 @@ float rawsolarlevel = 0.0;
 float solarvoltage = 0.0;
 
 #define LPLEVELPIN  39    // select the input pin for the LP sensor. analog A3 input 
-#define VOLTAGE_PIN 35    // select the input pin for the battery monitor (VP). Anaolg input A13 inout, reads 1/2 of battery voltage.
+/#define VOLTAGE_PIN 35    // select the input pin for the battery monitor (VP). Analog input A13 input, reads 1/2 of battery voltage.
 #define SENSORPOWER 21    // select the output pin to power the sensor which draws 3 ma. 
 #define SOLARPIN    36     //select the input pin for the solar panel voltage monitor. Analog input A4.
 #define LED_BUILTIN 13  // connected to the red LED
@@ -70,7 +72,7 @@ void setup_wifi()       // We start by connecting to a WiFi network
   Serial.print("Connecting to WiFi SSID ");
   WiFi.mode(WIFI_STA);
   Serial.println(ssid);
- // if(!WiFi.config(local_IP, gateway, subnet, primaryDNS))
+ // if(!WiFi.config(local_IP, gateway, subnet, primaryDNS))   // use these 4 lines if you wish to use the static IP address
  // {
  //   Serial.println("STA failed to configure");
  // }
@@ -127,7 +129,7 @@ void loop()    {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(SENSORPOWER, OUTPUT);
   Serial.println("");
-  Serial.println("Reading sensor data");
+  Serial.println("Reading sensor data...");
   
 // These next lines will read the LP Gas level voltage 
   digitalWrite(SENSORPOWER, HIGH); //This powers up the LP sensor on GPIO 21
@@ -157,7 +159,7 @@ void loop()    {
   rawsolarlevel = analogRead(SOLARPIN); // GPIO36 or analog input A4
   Serial.print("The raw solar level is ");
   Serial.println(rawsolarlevel);
-  solarvoltage =  (rawsolarlevel/4095) * 6.6; //the resisitors were both 200k. Ajust the calibration number to match VOM readings of solar output.
+  solarvoltage =  (rawsolarlevel/4095) * 6.6; //the resistors were both 200k. Adjust the calibration number to match VOM readings of solar output.
   Serial.print("The solar output voltage is ");
   Serial.print(solarvoltage);
   Serial.println(" Volts");
@@ -174,9 +176,9 @@ void loop()    {
   if (solarvoltage <= 3)// sets the level for the low solar output message to be sent.
   { 
     Serial.println("SOLAR OUTPUT VOLTAGE IS LOW!");
-  //client.publish("sensor/lpgassensor/solarvoltage", String("LP GAS Sensor Solar output voltage is low!").c_str());  // Publish the low solar output voltage message value to MQTT
+  //client.publish("sensor/lpgassensor/solarvoltage", String("LP GAS Sensor Solar output voltage is low!").c_str());  // Publish the low solar output voltage          message value to MQTT
   }
-  if (batterylevel <= 3.5)// sets the level for the low battery message to be sent.
+  if (batterylevel <= 3.6)// sets the level for the low battery message to be sent.
   { 
     Serial.println("BATTERY VOLTAGE IS LOW!");
   //client.publish("sensor/lpgassensor/batterylevel", String("LP GAS Sensor battery level is low!").c_str());  // Publish the low battery message value to MQTT
@@ -201,3 +203,5 @@ void loop()    {
  //delay(3000);   //  comment out this line for testing 
   return;
 }
+
+
